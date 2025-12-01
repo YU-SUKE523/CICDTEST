@@ -1,0 +1,122 @@
+name: ECS Deploy Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Sub/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      desired_count:
+        description: 'Number of desired tasks'
+        required: false
+        default: '1'
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: ecr-u13-ficc-test-bondsubscriber-app
+  TENANT: u13
+  DEPARTMENT: ficc
+  ENV: test
+  STACK_NAME: ecs-u13-ficc-test-bondsubscriber-app
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::977614337881:role/iampolicy-u13-ficc-test-ecs-cicd-operations-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate image tag
+        id: image-tag
+        run: |
+          IMAGE_TAG=$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Generated image tag: ${IMAGE_TAG}"
+
+      - name: Build Docker image
+        working-directory: ./Sub
+        run: |
+          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.IMAGE_TAG }} .
+          docker tag ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.IMAGE_TAG }} \
+                     ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.IMAGE_TAG }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Update ECS Stack
+        run: |
+          DESIRED_COUNT="${{ github.event.inputs.desired_count }}"
+          if [ -z "$DESIRED_COUNT" ]; then
+            DESIRED_COUNT="1"
+          fi
+          
+          aws cloudformation update-stack \
+            --stack-name ${{ env.STACK_NAME }} \
+            --use-previous-template \
+            --parameters \
+              ParameterKey=Tenant,UsePreviousValue=true \
+              ParameterKey=Department,UsePreviousValue=true \
+              ParameterKey=Env,UsePreviousValue=true \
+              ParameterKey=ECStag,ParameterValue=${{ steps.image-tag.outputs.IMAGE_TAG }} \
+              ParameterKey=DesiredCount,ParameterValue=${DESIRED_COUNT} \
+            --capabilities CAPABILITY_IAM
+
+      - name: Wait for stack update to complete
+        run: |
+          echo "Waiting for stack update to complete..."
+          aws cloudformation wait stack-update-complete \
+            --stack-name ${{ env.STACK_NAME }}
+          echo "Stack update completed successfully!"
+
+      - name: Get ECS Service info
+        run: |
+          CLUSTER_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ECSClusterName'].OutputValue" \
+            --output text)
+          
+          SERVICE_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ECSServiceName'].OutputValue" \
+            --output text)
+          
+          echo "Cluster: ${CLUSTER_NAME}"
+          echo "Service: ${SERVICE_NAME}"
+          
+          aws ecs describe-services \
+            --cluster ${CLUSTER_NAME} \
+            --services ${SERVICE_NAME} \
+            --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+            --output table
+
+      - name: Deployment Summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: \`${{ steps.image-tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECR Repository**: \`${{ env.ECR_REPOSITORY }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stack Name**: \`${{ env.STACK_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region**: \`${{ env.AWS_REGION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Deployment completed successfully!" >> $GITHUB_STEP_SUMMARY
