@@ -16,7 +16,7 @@ on:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: ecr-u13-ficc-test-bondsubscriber-app
+  ECR_REPOSITORY: ecr-u13-ficc-test/bondsubscriber-app
   TENANT: u13
   DEPARTMENT: ficc
   ENV: test
