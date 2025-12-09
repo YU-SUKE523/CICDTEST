@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Simple S3 Bucket CloudFormation Template'
+
+Parameters:
+  BucketNamePrefix:
+    Type: String
+    Default: my-sample-bucket
+    Description: S3 bucket name prefix (actual name will include account ID and region for uniqueness)
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${BucketNamePrefix}'
+        - Key: Environment
+          Value: Development
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+  
+  BucketArn:
+    Description: ARN of the S3 bucket
+    Value: !GetAtt S3Bucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
